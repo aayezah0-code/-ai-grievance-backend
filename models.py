@@ -33,6 +33,7 @@ class Complaint(Base):
     caller_phone = Column(String, nullable=True)         # Phone number from voice call
     call_transcript = Column(Text, nullable=True)         # Full call transcript from Sarvam AI
     call_source = Column(String, nullable=True)           # e.g. 'sarvam_voice', 'web', 'app'
+    recording_url = Column(String, nullable=True)         # Audio recording URL from Sarvam
     created_at = Column(DateTime, default=datetime.datetime.now)
 
 class User(Base):

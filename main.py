@@ -305,6 +305,10 @@ class ComplaintResponse(BaseModel):
     confidence_score: Optional[int] = None
     image_observation: Optional[str] = None
     official_remarks: Optional[str] = None
+    caller_phone: Optional[str] = None
+    call_transcript: Optional[str] = None
+    call_source: Optional[str] = None
+    recording_url: Optional[str] = None
     created_at: datetime.datetime
 
     class Config:
@@ -1750,6 +1754,15 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"[Voice Webhook] AI fallback note: {e}")
 
+    # ── Extract call audio recording URL if available ──────────────────
+    recording_url = (
+        payload.get("recording_url") or
+        payload.get("call_recording_url") or
+        payload.get("audio_url") or
+        payload.get("recording") or
+        None
+    )
+
     complaint = models.Complaint(
         citizen_name=f"{citizen_name} (📞 Voice Helpline)",
         original_text=original_text,
@@ -1767,6 +1780,7 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
         caller_phone=caller_phone,
         call_transcript=call_transcript,
         call_source=call_source,
+        recording_url=recording_url,
         created_at=datetime.datetime.now()
     )
     db.add(complaint)
