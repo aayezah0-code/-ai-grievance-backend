@@ -1694,35 +1694,82 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
 
     print(f"[Voice Webhook] Raw payload from Sarvam AI: {payload}")
 
-    # ── Extract caller phone ────────────────────────────────────────────
-    caller_phone = (
-        payload.get("caller_phone") or
-        payload.get("from_number") or
-        payload.get("from") or
-        payload.get("phone") or
-        payload.get("phone_number") or
-        None
-    )
+    # ── Deep extraction for caller phone (handles nested Sarvam payloads) ──
+    def find_phone_in_dict(obj):
+        if not obj:
+            return None
+        if isinstance(obj, str):
+            digits = "".join(ch for ch in obj if ch.isdigit())
+            if len(digits) >= 10:
+                return obj.strip()
+            return None
+        if isinstance(obj, dict):
+            for k in [
+                "caller_phone", "from_number", "from", "phone", "phone_number", 
+                "caller", "customer_number", "caller_id", "user_number", 
+                "telephony_from", "ani", "cli"
+            ]:
+                if k in obj and obj[k]:
+                    val = find_phone_in_dict(obj[k])
+                    if val:
+                        return val
+            for v in obj.values():
+                if isinstance(v, (dict, list)):
+                    found = find_phone_in_dict(v)
+                    if found:
+                        return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = find_phone_in_dict(item)
+                if found:
+                    return found
+        return None
+
+    caller_phone = find_phone_in_dict(payload)
 
     # ── Extract transcript (Sarvam sends list of {role,content} dicts) ──
     raw_transcript = payload.get("transcript") or payload.get("call_transcript") or payload.get("conversation")
     if isinstance(raw_transcript, list):
-        # Convert list of {role, content} to readable string
         call_transcript = "\n".join(
             f"{turn.get('role','?').upper()}: {turn.get('content','')}"
             for turn in raw_transcript
         )
     else:
-        call_transcript = raw_transcript or ""
+        call_transcript = str(raw_transcript or "").strip()
 
-    # ── Extract agent_variables (citizen may have spoken name/address) ──
+    # ── Extract citizen name (from agent_vars, transcript, or caller phone) ──
     agent_vars = payload.get("agent_variables") or {}
     citizen_name = (
         agent_vars.get("citizen_name") or
         agent_vars.get("name") or
         payload.get("citizen_name") or
-        f"Caller {caller_phone or 'Unknown'}"
-    )
+        ""
+    ).strip()
+
+    # If Sarvam didn't explicitly pass a name, try to extract from spoken transcript
+    if not citizen_name and call_transcript:
+        import re
+        name_patterns = [
+            r"(?:mera\s+naam|my\s+name\s+is|main\s+naam|i\s+am)\s+([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)",
+            r"(?:naam\s+hai|naam\s+h)\s+([A-Za-z\u0900-\u097F]+)",
+        ]
+        for pat in name_patterns:
+            m = re.search(pat, call_transcript, re.IGNORECASE)
+            if m:
+                extracted = m.group(1).strip().title()
+                if len(extracted) > 2 and extracted.lower() not in ["nahi", "kya", "mera", "bata", "caller"]:
+                    citizen_name = extracted
+                    break
+
+    # If name is still not found, format nicely with their phone number!
+    if not citizen_name:
+        if caller_phone:
+            citizen_name = f"Citizen ({caller_phone})"
+        else:
+            citizen_name = "Voice Helpline Caller"
+    elif caller_phone and caller_phone not in citizen_name:
+        citizen_name = f"{citizen_name} ({caller_phone})"
+
     address = (
         agent_vars.get("address") or
         agent_vars.get("location") or
