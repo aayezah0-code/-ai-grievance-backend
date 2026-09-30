@@ -1603,71 +1603,68 @@ def seed_data():
         db.add_all(campaigns)
         db.commit()
 
-        # Add initial complaints for Heatmap
-        complaints = [
-            models.Complaint(
-                citizen_name="Rahul Sharma",
-                original_text="Heavy waterlogging on main road after rain. Potholes are very deep and dangerous.",
-                department="Roads & Infrastructure",
-                priority="High",
-                sentiment="Negative",
-                status="Pending",
-                state="Madhya Pradesh",
-                detected_issue="Potholes & Waterlogging"
-            ),
-            models.Complaint(
-                citizen_name="Anita Desai",
-                original_text="Stray dog injured in car accident, needs urgent medical attention near Bandra.",
-                department="Animal Welfare",
-                priority="Critical",
-                sentiment="Negative",
-                status="Pending",
-                state="Maharashtra",
-                detected_issue="Injured Animal"
-            ),
-            models.Complaint(
-                citizen_name="Vikas Gupta",
-                original_text="Garbage not collected for 10 days, bad smell and health risk in the colony.",
-                department="Sanitation",
-                priority="High",
-                sentiment="Negative",
-                status="In Progress",
-                state="Delhi",
-                detected_issue="Garbage Dumping"
-            ),
-            models.Complaint(
-                citizen_name="Priya Singh",
-                original_text="Street lights not working for a week, very unsafe for women walking at night.",
-                department="Public Safety",
-                priority="Urgent",
-                sentiment="Negative",
-                status="Pending",
-                state="Uttar Pradesh",
-                detected_issue="Broken Street Lights"
-            ),
-            models.Complaint(
-                citizen_name="Amit Patel",
-                original_text="Sewage line leakage, dirty water flooding the basement area.",
-                department="Sanitation",
-                priority="High",
-                sentiment="Negative",
-                status="Pending",
-                state="Madhya Pradesh",
-                detected_issue="Sewage Leakage"
-            ),
-            models.Complaint(
-                citizen_name="Sanjay Rao",
-                original_text="Fallen tree blocking the road and damaged power lines.",
-                department="Roads & Infrastructure",
-                priority="Critical",
-                sentiment="Negative",
-                status="Pending",
-                state="Maharashtra",
-                detected_issue="Road Blockage"
-            )
-        ]
-        db.add_all(complaints)
-        db.commit()
+        # Seed initial complaints from initial_complaints_seed.json (includes all 41 complaints)
+        seed_file = os.path.join(os.path.dirname(__file__), "initial_complaints_seed.json")
+        seeded = False
+        if os.path.exists(seed_file):
+            try:
+                with open(seed_file, "r", encoding="utf-8") as f:
+                    seed_list = json.load(f)
+                complaint_objs = []
+                for sc in seed_list:
+                    c_dt = datetime.datetime.fromisoformat(sc["created_at"]) if sc.get("created_at") else datetime.datetime.now()
+                    c_obj = models.Complaint(
+                        citizen_name=sc.get("citizen_name"),
+                        title=sc.get("title"),
+                        original_text=sc.get("original_text") or "",
+                        translated_text=sc.get("translated_text"),
+                        department=sc.get("department") or "Other",
+                        priority=sc.get("priority") or "Medium",
+                        sentiment=sc.get("sentiment") or "Neutral",
+                        status=sc.get("status") or "Pending",
+                        estimated_resolution_time=sc.get("estimated_resolution_time"),
+                        image_url=sc.get("image_url"),
+                        latitude=sc.get("latitude"),
+                        longitude=sc.get("longitude"),
+                        address=sc.get("address"),
+                        pincode=sc.get("pincode"),
+                        ai_summary=sc.get("ai_summary"),
+                        detected_issue=sc.get("detected_issue"),
+                        category=sc.get("category"),
+                        visual_risk_level=sc.get("visual_risk_level") or "Medium",
+                        issue_tags=sc.get("issue_tags"),
+                        confidence_score=sc.get("confidence_score") or 95,
+                        image_observation=sc.get("image_observation"),
+                        official_remarks=sc.get("official_remarks"),
+                        state=sc.get("state"),
+                        caller_phone=sc.get("caller_phone"),
+                        call_transcript=sc.get("call_transcript"),
+                        call_source=sc.get("call_source"),
+                        recording_url=sc.get("recording_url"),
+                        interaction_id=sc.get("interaction_id"),
+                        user_id=sc.get("user_id"),
+                        created_at=c_dt
+                    )
+                    complaint_objs.append(c_obj)
+                db.add_all(complaint_objs)
+                db.commit()
+                seeded = True
+                print(f"[Seed] Successfully seeded {len(complaint_objs)} complaints from initial_complaints_seed.json")
+            except Exception as e:
+                print(f"[Seed] Error reading seed file: {e}")
+                db.rollback()
+
+        if not seeded:
+            complaints = [
+                models.Complaint(citizen_name="Rahul Sharma", original_text="Heavy waterlogging on main road after rain. Potholes are very deep and dangerous.", department="Roads & Infrastructure", priority="High", sentiment="Negative", status="Pending", state="Madhya Pradesh", detected_issue="Potholes & Waterlogging"),
+                models.Complaint(citizen_name="Anita Desai", original_text="Stray dog injured in car accident, needs urgent medical attention near Bandra.", department="Animal Welfare", priority="Critical", sentiment="Negative", status="Pending", state="Maharashtra", detected_issue="Injured Animal"),
+                models.Complaint(citizen_name="Vikas Gupta", original_text="Garbage not collected for 10 days, bad smell and health risk in the colony.", department="Sanitation", priority="High", sentiment="Negative", status="In Progress", state="Delhi", detected_issue="Garbage Dumping"),
+                models.Complaint(citizen_name="Priya Singh", original_text="Street lights not working for a week, very unsafe for women walking at night.", department="Public Safety", priority="Urgent", sentiment="Negative", status="Pending", state="Uttar Pradesh", detected_issue="Broken Street Lights"),
+                models.Complaint(citizen_name="Amit Patel", original_text="Sewage line leakage, dirty water flooding the basement area.", department="Sanitation", priority="High", sentiment="Negative", status="Pending", state="Madhya Pradesh", detected_issue="Sewage Leakage"),
+                models.Complaint(citizen_name="Sanjay Rao", original_text="Fallen tree blocking the road and damaged power lines.", department="Roads & Infrastructure", priority="Critical", sentiment="Negative", status="Pending", state="Maharashtra", detected_issue="Road Blockage")
+            ]
+            db.add_all(complaints)
+            db.commit()
 
     db.close()
 
