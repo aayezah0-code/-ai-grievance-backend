@@ -153,3 +153,27 @@ class SocialHelpCase(Base):
     status = Column(String, default="Pending Assessment")
     created_at = Column(DateTime, default=datetime.datetime.now)
 
+
+# ─── Feature: User Feedback + Resolution Confirmation ──────────────────────
+
+class Feedback(Base):
+    """Citizen feedback submitted from My Complaints page per complaint."""
+    __tablename__ = "feedback"
+
+    id = Column(Integer, primary_key=True, index=True)
+    complaint_id = Column(Integer, index=True, nullable=False)
+    user_id = Column(Integer, index=True, nullable=False)
+    feedback_text = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.now)
+
+
+class ResolutionConfirmation(Base):
+    """Citizen confirmation of solved/not_solved from the completion email link."""
+    __tablename__ = "resolution_confirmations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    complaint_id = Column(Integer, index=True, nullable=False)
+    user_id = Column(Integer, index=True, nullable=False)
+    response = Column(String, nullable=False)  # 'solved' or 'not_solved'
+    created_at = Column(DateTime, default=datetime.datetime.now)
+

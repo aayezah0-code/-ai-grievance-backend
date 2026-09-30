@@ -88,6 +88,42 @@ def create_access_token(user_id: int, role: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
+EMAIL_ACTION_SECRET = os.getenv("EMAIL_ACTION_SECRET", "email-action-secret-key-32-chars-long-grievance-2026")
+EMAIL_ACTION_EXPIRE_HOURS = 72
+
+def create_email_action_token(complaint_id: int, user_id: int, action: str) -> str:
+    """Create a short-lived, purpose-specific signed token for email SOLVED/NOT SOLVED actions.
+    Completely separate from the login JWT."""
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    expire = now_utc + datetime.timedelta(hours=EMAIL_ACTION_EXPIRE_HOURS)
+    payload = {
+        "purpose": "email_resolution",
+        "complaint_id": complaint_id,
+        "user_id": user_id,
+        "action": action,   # 'solved' or 'not_solved'
+        "exp": expire,
+        "iat": now_utc
+    }
+    return jwt.encode(payload, EMAIL_ACTION_SECRET, algorithm=JWT_ALGORITHM)
+
+def verify_email_action_token(token: str) -> dict:
+    """Verify and decode an email action token. Returns payload dict or raises HTTPException."""
+    try:
+        payload = jwt.decode(token, EMAIL_ACTION_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("purpose") != "email_resolution":
+            raise HTTPException(status_code=400, detail="Invalid token purpose")
+        required = ["complaint_id", "user_id", "action"]
+        for field in required:
+            if payload.get(field) is None:
+                raise HTTPException(status_code=400, detail=f"Token missing required field: {field}")
+        if payload.get("action") not in ("solved", "not_solved"):
+            raise HTTPException(status_code=400, detail="Invalid action in token")
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Confirmation link has expired. Please contact support.")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid or tampered confirmation link.")
+
 # --- EMAIL CONFIGURATION (Phase 8) ---
 MAIL_HOST = os.getenv("MAIL_HOST", "smtp.gmail.com")
 MAIL_PORT = int(os.getenv("MAIL_PORT", "587"))
@@ -105,23 +141,41 @@ def send_completion_email(
     department: str = "",
     priority: str = "",
     official_remarks: Optional[str] = None,
-    created_at = None
+    created_at = None,
+    user_id: Optional[int] = None
 ):
-    """Send a resolution notification email to the complaint owner upon completion."""
+    """Send a resolution notification email to the complaint owner upon completion.
+    Includes clickable HTML [ ✓ SOLVED ] and [ ✕ NOT SOLVED ] confirmation buttons backed by signed tokens."""
     if not MAIL_USERNAME or not MAIL_PASSWORD:
         print(f"[Email] EMAIL FAILED: SMTP credentials not configured in environment — skipping email for complaint #{complaint_id}")
         return
+
+    # Use configured public application URL for frontend confirmation links
+    public_app_url = os.getenv("PUBLIC_APP_URL") or os.getenv("FRONTEND_URL") or "http://localhost:3000"
+
+    # Generate secure signed tokens for SOLVED and NOT SOLVED actions
+    solved_token = ""
+    not_solved_token = ""
+    if user_id:
+        try:
+            solved_token = create_email_action_token(complaint_id, user_id, "solved")
+            not_solved_token = create_email_action_token(complaint_id, user_id, "not_solved")
+        except Exception as tok_err:
+            print(f"[Email] Warning: Could not generate action tokens: {tok_err}")
+
+    solved_url = f"{public_app_url.rstrip('/')}/resolution-feedback?token={solved_token}" if solved_token else ""
+    not_solved_url = f"{public_app_url.rstrip('/')}/resolution-feedback?token={not_solved_token}" if not_solved_token else ""
 
     try:
         subject = f"Your Complaint Has Been Completed - Complaint #{complaint_id}"
         formatted_date = created_at.strftime("%d %b %Y, %I:%M %p") if isinstance(created_at, datetime.datetime) else (str(created_at) if created_at else "N/A")
         remarks_text = official_remarks if (official_remarks and official_remarks.strip()) else "No additional remarks."
 
-        body = f"""Dear {citizen_name},
+        # ── 1. Plain Text Fallback ──
+        plain_body = f"""Dear {citizen_name},
 
-We are pleased to inform you that your grievance has been marked as Completed.
+We are pleased to inform you that your grievance has been marked as Completed by the department.
 
---------------------------------------------------
 COMPLAINT DETAILS
 --------------------------------------------------
 Complaint ID     : #{complaint_id}
@@ -139,17 +193,162 @@ Official Remarks:
 {remarks_text}
 --------------------------------------------------
 
-Thank you for bringing this matter to our attention. Your active participation helps improve our civic infrastructure.
+WAS YOUR ISSUE RESOLVED?
+Please confirm whether your issue has actually been resolved using the confirmation buttons in the HTML version of this email.
+
+Thank you for your active participation in civic governance.
 
 Regards,
 Municipal Grievance Redressal Team
 CitizenConnect"""
 
-        msg = MIMEMultipart()
+        # ── 2. Rich HTML Version with Clickable Buttons ──
+        html_action_section = ""
+        if solved_url and not_solved_url:
+            html_action_section = f"""
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color: #1a1036; border: 1px solid rgba(168, 85, 247, 0.35); border-radius: 14px; margin: 28px 0; padding: 24px 16px; text-align: center;">
+                  <tr>
+                    <td align="center">
+                      <div style="font-size: 11px; font-weight: 800; color: #c084fc; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px;">Resolution Verification</div>
+                      <h3 style="margin: 0 0 10px 0; font-size: 18px; color: #ffffff; font-weight: 800;">WAS YOUR ISSUE RESOLVED?</h3>
+                      <p style="margin: 0 0 22px 0; font-size: 14px; color: #cbd5e1; line-height: 1.5; max-width: 480px;">
+                        Please click one of the buttons below to confirm whether the reported issue has actually been resolved to your satisfaction:
+                      </p>
+
+                      <!-- Action Buttons Container -->
+                      <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center">
+                        <tr>
+                          <td align="center" style="padding: 6px 10px;">
+                            <a href="{solved_url}" target="_blank" rel="noopener noreferrer" style="display: inline-block; background-color: #10b981; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 10px; font-weight: 800; font-size: 14px; letter-spacing: 0.5px; border: 1px solid #059669; min-width: 140px; text-align: center;">
+                              &#10003; &nbsp; SOLVED
+                            </a>
+                          </td>
+                          <td align="center" style="padding: 6px 10px;">
+                            <a href="{not_solved_url}" target="_blank" rel="noopener noreferrer" style="display: inline-block; background-color: #ef4444; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 10px; font-weight: 800; font-size: 14px; letter-spacing: 0.5px; border: 1px solid #dc2626; min-width: 140px; text-align: center;">
+                              &#10005; &nbsp; NOT SOLVED
+                            </a>
+                          </td>
+                        </tr>
+                      </table>
+
+                      <div style="margin-top: 18px; font-size: 12px; color: #94a3b8;">
+                        Your direct feedback helps the municipal administration track field resolution quality.
+                      </div>
+                    </td>
+                  </tr>
+                </table>
+            """
+
+        html_body = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Complaint Resolved</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #e2e8f0;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color: #0b0f19; padding: 30px 15px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width: 620px; background-color: #111827; border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.08); overflow: hidden; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);">
+          <!-- Header Bar -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 32px 30px; text-align: center;">
+              <div style="display: inline-block; background: rgba(255, 255, 255, 0.2); border-radius: 50%; width: 54px; height: 54px; line-height: 54px; font-size: 26px; margin-bottom: 12px;">&#10003;</div>
+              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">Grievance Resolved</h1>
+              <p style="margin: 6px 0 0 0; color: rgba(255, 255, 255, 0.9); font-size: 14px;">Complaint #{complaint_id} has been marked Completed</p>
+            </td>
+          </tr>
+
+          <!-- Content Body -->
+          <tr>
+            <td style="padding: 32px 30px;">
+              <p style="margin: 0 0 20px 0; font-size: 15px; color: #f1f5f9; line-height: 1.6;">
+                Dear <strong>{citizen_name}</strong>,<br>
+                The relevant department has addressed and marked your reported civic issue as <strong>Completed</strong>.
+              </p>
+
+              <!-- Complaint Summary Card -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color: #1f2937; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.06); margin-bottom: 24px;">
+                <tr>
+                  <td style="padding: 18px 20px;">
+                    <div style="font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; margin-bottom: 4px;">Title</div>
+                    <div style="font-size: 16px; color: #ffffff; font-weight: 700; margin-bottom: 16px;">{complaint_title or 'Civic Grievance'}</div>
+
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                      <tr>
+                        <td width="50%" style="padding-bottom: 12px;">
+                          <div style="font-size: 11px; color: #9ca3af;">Department</div>
+                          <div style="font-size: 14px; color: #e5e7eb; font-weight: 600;">{department or 'Public Works'}</div>
+                        </td>
+                        <td width="50%" style="padding-bottom: 12px;">
+                          <div style="font-size: 11px; color: #9ca3af;">Category</div>
+                          <div style="font-size: 14px; color: #e5e7eb; font-weight: 600;">{category or 'General'}</div>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td width="50%">
+                          <div style="font-size: 11px; color: #9ca3af;">Priority</div>
+                          <div style="font-size: 14px; color: #e5e7eb; font-weight: 600;">{priority or 'Medium'}</div>
+                        </td>
+                        <td width="50%">
+                          <div style="font-size: 11px; color: #9ca3af;">Date Filed</div>
+                          <div style="font-size: 14px; color: #e5e7eb; font-weight: 600;">{formatted_date}</div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Description Block -->
+              {f'''
+              <div style="margin-bottom: 20px;">
+                <div style="font-size: 12px; color: #9ca3af; text-transform: uppercase; font-weight: 700; margin-bottom: 6px;">Reported Issue</div>
+                <div style="background: rgba(255, 255, 255, 0.03); border-left: 3px solid #6366f1; padding: 12px 14px; border-radius: 6px; font-size: 13px; color: #cbd5e1; line-height: 1.5;">
+                  {description}
+                </div>
+              </div>
+              ''' if description else ''}
+
+              <!-- Official Remarks Block -->
+              <div style="margin-bottom: 10px;">
+                <div style="font-size: 12px; color: #9ca3af; text-transform: uppercase; font-weight: 700; margin-bottom: 6px;">Official Department Remarks</div>
+                <div style="background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10b981; padding: 12px 14px; border-radius: 6px; font-size: 13px; color: #d1fae5; line-height: 1.5;">
+                  {remarks_text}
+                </div>
+              </div>
+
+              <!-- Action Verification Section with Clickable Buttons -->
+              {html_action_section}
+
+              <p style="font-size: 13px; color: #94a3b8; line-height: 1.5; margin: 24px 0 0 0;">
+                Thank you for your active participation in making our city cleaner and safer.<br>
+                <strong>Municipal Grievance Redressal Team</strong>
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #0d131f; padding: 20px; text-align: center; border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 12px; color: #64748b;">
+              CitizenConnect AI Grievance Redressal Portal &bull; Automated System Notification<br>
+              This email was generated automatically. Please do not reply directly to this address.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+        msg = MIMEMultipart("alternative")
         msg["From"] = MAIL_FROM
         msg["To"] = to_email
         msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
+        msg.attach(MIMEText(plain_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
 
         with smtplib.SMTP(MAIL_HOST, MAIL_PORT, timeout=15) as server:
             server.ehlo()
@@ -165,14 +364,20 @@ CitizenConnect"""
             safe_msg = safe_msg.replace(MAIL_PASSWORD, "******")
         print(f"[Email] EMAIL FAILED: Could not deliver completion email to {to_email} for complaint #{complaint_id}: {safe_msg}")
 
+SUPABASE_STORAGE_URL = "https://syxyymkbmhgbpoaefbtk.supabase.co/storage/v1"
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN5eHl5bWtibWhnYnBvYWVmYnRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3ODY5NDMsImV4cCI6MjEwNjM2Mjk0M30.Nxsd6B4Ma-vxZ2zM1XoLmfRsk151cyc5uFy8pZmW7vA")
+UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
 def send_verification_email(to_email: str, full_name: str, code: str):
     """Send a 6-digit email verification code to a newly registered citizen."""
+    print(f"[AUTH OTP] Generated verification code for {to_email}: {code}")
     if not MAIL_USERNAME or not MAIL_PASSWORD:
         print(f"[Email] VERIFICATION EMAIL FAILED: SMTP not configured — skipping for {to_email}")
         return False
     try:
-        subject = "Verify Your CitizenConnect Account"
-        body = f"""Dear {full_name},
+        subject = f"Your CitizenConnect Verification Code: {code}"
+        text_body = f"""Dear {full_name},
 
 Thank you for registering with CitizenConnect.
 
@@ -185,12 +390,41 @@ This code will expire in 10 minutes.
 If you did not create this account, please ignore this email.
 
 Regards,
-CitizenConnect"""
-        msg = MIMEMultipart()
+CitizenConnect Team"""
+
+        html_body = f"""<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0717; color: #f1f5f9; padding: 2rem; margin: 0;">
+  <div style="max-width: 500px; margin: 0 auto; background: #130a2a; border: 1px solid rgba(168,85,247,0.3); border-radius: 16px; padding: 2rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem;">
+      <h2 style="margin: 0; color: #ffffff; font-size: 1.3rem;">Citizen<span style="color: #c084fc;">Connect</span></h2>
+    </div>
+    <h3 style="margin-top: 0; color: #f8fafc; font-size: 1.15rem;">Email Verification Code</h3>
+    <p style="color: rgba(255,255,255,0.7); font-size: 0.95rem; line-height: 1.6;">
+      Hello <strong>{full_name}</strong>,<br>
+      Use the 6-digit verification code below to complete your registration:
+    </p>
+    <div style="background: rgba(168,85,247,0.12); border: 1px solid rgba(168,85,247,0.35); border-radius: 12px; padding: 1.25rem; text-align: center; margin: 1.5rem 0;">
+      <span style="font-size: 2.2rem; font-weight: 900; letter-spacing: 8px; color: #c084fc; font-family: monospace;">{code}</span>
+    </div>
+    <p style="color: rgba(255,255,255,0.5); font-size: 0.85rem; line-height: 1.5;">
+      ⏰ This code is valid for 10 minutes. If you did not create this account, please disregard this email.
+    </p>
+    <hr style="border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 1.5rem 0;">
+    <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); text-align: center;">
+      Civic Grievance Redressal System • CitizenConnect
+    </div>
+  </div>
+</body>
+</html>"""
+
+        msg = MIMEMultipart("alternative")
         msg["From"] = MAIL_FROM
         msg["To"] = to_email
         msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
+        msg.attach(MIMEText(text_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+
         with smtplib.SMTP(MAIL_HOST, MAIL_PORT, timeout=15) as server:
             server.ehlo()
             server.starttls()
@@ -208,8 +442,7 @@ CitizenConnect"""
 
 app = FastAPI(title="Grievance Processing AI")
 
-os.makedirs("uploads", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
@@ -284,20 +517,20 @@ class ComplaintCreate(BaseModel):
 class ComplaintResponse(BaseModel):
     id: int
     user_id: Optional[int] = None
-    citizen_name: str
-    title: Optional[str]
-    original_text: str
-    translated_text: Optional[str]
-    department: str
-    priority: str
-    sentiment: str
-    status: str
-    latitude: Optional[str]
-    longitude: Optional[str]
-    address: Optional[str]
-    pincode: Optional[str]
-    image_url: Optional[str]
-    estimated_resolution_time: Optional[str]
+    citizen_name: Optional[str] = "Citizen"
+    title: Optional[str] = None
+    original_text: Optional[str] = ""
+    translated_text: Optional[str] = None
+    department: Optional[str] = "General"
+    priority: Optional[str] = "Medium"
+    sentiment: Optional[str] = "Neutral"
+    status: Optional[str] = "Pending"
+    latitude: Optional[str] = None
+    longitude: Optional[str] = None
+    address: Optional[str] = None
+    pincode: Optional[str] = None
+    image_url: Optional[str] = None
+    estimated_resolution_time: Optional[str] = None
     ai_summary: Optional[str] = None
     detected_issue: Optional[str] = None
     category: Optional[str] = None
@@ -311,7 +544,9 @@ class ComplaintResponse(BaseModel):
     call_source: Optional[str] = None
     recording_url: Optional[str] = None
     interaction_id: Optional[str] = None
-    created_at: datetime.datetime
+    resolution_response: Optional[str] = None
+    feedback_text: Optional[str] = None
+    created_at: Optional[datetime.datetime] = None
 
     class Config:
         from_attributes = True
@@ -351,7 +586,26 @@ import secrets
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(models.User.email == user.email).first()
     if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        if db_user.is_verified:
+            raise HTTPException(status_code=400, detail="This email is already registered and verified. Please go to the Login page.")
+        # If user registered before but hasn't verified yet, issue a fresh OTP code and resend email
+        code = str(secrets.randbelow(1000000)).zfill(6)
+        expires_at = datetime.datetime.now() + datetime.timedelta(minutes=10)
+        db_user.verification_code = code
+        db_user.verification_code_expires_at = expires_at
+        if user.full_name:
+            db_user.full_name = user.full_name
+        if user.password:
+            db_user.hashed_password = user.password
+        db.commit()
+        email_sent = send_verification_email(db_user.email, db_user.full_name, code)
+        return {
+            "message": "Account was already registered but not yet verified. A fresh verification code has been sent to your email.",
+            "user_id": db_user.id,
+            "email": db_user.email,
+            "email_sent": email_sent,
+            "requires_verification": True
+        }
 
     # Generate secure 6-digit verification code
     code = str(secrets.randbelow(1000000)).zfill(6)
@@ -606,9 +860,30 @@ def upload_file(file: UploadFile = File(...)):
     try:
         file_extension = file.filename.split(".")[-1]
         unique_filename = f"{uuid.uuid4()}.{file_extension}"
-        file_path = os.path.join("uploads", unique_filename)
+        file_path = os.path.join(UPLOADS_DIR, unique_filename)
+
+        contents = file.file.read()
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(contents)
+
+        # Permanent upload to Supabase Storage complaint-images bucket
+        try:
+            content_type = file.content_type or "image/png"
+            supabase_upload_url = f"{SUPABASE_STORAGE_URL}/object/complaint-images/{unique_filename}"
+            headers = {
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+                "Content-Type": content_type
+            }
+            req = urllib.request.Request(supabase_upload_url, data=contents, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status in (200, 201):
+                    permanent_url = f"{SUPABASE_STORAGE_URL}/object/public/complaint-images/{unique_filename}"
+                    print(f"[Storage] Uploaded image to Supabase Storage: {permanent_url}")
+                    return {"image_url": permanent_url}
+        except Exception as sup_err:
+            print(f"[Storage] Supabase storage upload notice (using local fallback): {sup_err}")
+
         return {"image_url": f"/uploads/{unique_filename}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -632,9 +907,19 @@ def submit_complaint(
             print(f"[Backend] JWT decode in complaint submission failed or expired: {e}")
 
     local_image_path = None
-    if complaint.image_url and "uploads/" in complaint.image_url:
-        filename = complaint.image_url.split("uploads/")[-1]
-        local_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", filename)
+    if complaint.image_url:
+        if "uploads/" in complaint.image_url:
+            filename = complaint.image_url.split("uploads/")[-1]
+            local_image_path = os.path.join(UPLOADS_DIR, filename)
+        elif "complaint-images/" in complaint.image_url:
+            filename = complaint.image_url.split("complaint-images/")[-1].split("?")[0]
+            local_image_path = os.path.join(UPLOADS_DIR, filename)
+            if not os.path.exists(local_image_path):
+                try:
+                    import urllib.request
+                    urllib.request.urlretrieve(complaint.image_url, local_image_path)
+                except Exception as dl_err:
+                    print(f"[Backend] Could not download image for AI analysis: {dl_err}")
 
     text_val = complaint.text or ""
     print(f"\n[AI Workflow] Fresh submission detected. Triggering ONE-TIME Gemini analysis...")
@@ -699,6 +984,20 @@ def get_complaints(response: Response, db: Session = Depends(get_db)):
     response.headers["Expires"] = "0"
     print(f"[AI Workflow] Fetching complaint list. REUSING stored AI analysis from database. No Gemini calls triggered.")
     complaints = db.query(models.Complaint).order_by(models.Complaint.id.desc()).all()
+
+    comp_ids = [c.id for c in complaints]
+    res_map = {}
+    fb_map = {}
+    if comp_ids:
+        for r in db.query(models.ResolutionConfirmation).filter(models.ResolutionConfirmation.complaint_id.in_(comp_ids)).all():
+            res_map[r.complaint_id] = r.response
+        for f in db.query(models.Feedback).filter(models.Feedback.complaint_id.in_(comp_ids)).all():
+            fb_map[f.complaint_id] = f.feedback_text
+
+    for c in complaints:
+        c.resolution_response = res_map.get(c.id)
+        c.feedback_text = fb_map.get(c.id)
+
     return complaints
 
 @app.get("/api/my-complaints", response_model=List[ComplaintResponse])
@@ -710,6 +1009,20 @@ def get_my_complaints(
         .filter(models.Complaint.user_id == current_user.id)\
         .order_by(models.Complaint.id.desc())\
         .all()
+
+    comp_ids = [c.id for c in complaints]
+    res_map = {}
+    fb_map = {}
+    if comp_ids:
+        for r in db.query(models.ResolutionConfirmation).filter(models.ResolutionConfirmation.complaint_id.in_(comp_ids)).all():
+            res_map[r.complaint_id] = r.response
+        for f in db.query(models.Feedback).filter(models.Feedback.complaint_id.in_(comp_ids)).all():
+            fb_map[f.complaint_id] = f.feedback_text
+
+    for c in complaints:
+        c.resolution_response = res_map.get(c.id)
+        c.feedback_text = fb_map.get(c.id)
+
     return complaints
 
 ALLOWED_COMPLAINT_STATUSES = {"Pending", "Approved", "Rejected", "In Progress", "Completed"}
@@ -773,7 +1086,8 @@ def update_complaint_status(
                         department=complaint.department or "Public Works",
                         priority=complaint.priority or "Medium",
                         official_remarks=complaint.official_remarks,
-                        created_at=complaint.created_at
+                        created_at=complaint.created_at,
+                        user_id=complaint.user_id
                     )
                 else:
                     print(f"[Email] EMAIL FAILED: Owner User ID {complaint.user_id} not found or missing email address.")
@@ -786,6 +1100,154 @@ def update_complaint_status(
             print(f"[Email] EMAIL FAILED: Complaint #{complaint.id} has no registered user_id (submitted anonymously).")
 
     return complaint
+
+
+# ─── Feature: User Feedback ──────────────────────────────────────────────────
+
+class FeedbackCreate(BaseModel):
+    feedback_text: str
+
+@app.post("/api/complaints/{complaint_id}/feedback")
+def submit_feedback(
+    complaint_id: int,
+    feedback: FeedbackCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Submit feedback for a specific complaint. Citizen can only submit feedback
+    for their OWN complaints (verified server-side via JWT). One feedback per complaint."""
+    if not feedback.feedback_text or not feedback.feedback_text.strip():
+        raise HTTPException(status_code=422, detail="Feedback text cannot be empty.")
+
+    complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found.")
+
+    if complaint.user_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not authorized to submit feedback for this complaint."
+        )
+
+    existing = db.query(models.Feedback).filter(
+        models.Feedback.complaint_id == complaint_id
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail="Feedback already submitted for this complaint."
+        )
+
+    new_feedback = models.Feedback(
+        complaint_id=complaint_id,
+        user_id=current_user.id,
+        feedback_text=feedback.feedback_text.strip(),
+        created_at=datetime.datetime.now()
+    )
+    db.add(new_feedback)
+    db.commit()
+    db.refresh(new_feedback)
+
+    print(f"[Feedback] Citizen {current_user.id} submitted feedback for complaint #{complaint_id}")
+
+    return {
+        "message": "Feedback submitted successfully.",
+        "feedback_id": new_feedback.id,
+        "complaint_id": complaint_id
+    }
+
+
+@app.get("/api/complaints/{complaint_id}/feedback")
+def get_complaint_feedback(
+    complaint_id: int,
+    admin_user: models.User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Admin-only: Get citizen feedback and resolution confirmation for a complaint."""
+    complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found.")
+
+    feedback = db.query(models.Feedback).filter(
+        models.Feedback.complaint_id == complaint_id
+    ).first()
+
+    resolution = db.query(models.ResolutionConfirmation).filter(
+        models.ResolutionConfirmation.complaint_id == complaint_id
+    ).first()
+
+    return {
+        "complaint_id": complaint_id,
+        "feedback": {
+            "text": feedback.feedback_text if feedback else None,
+            "submitted_at": feedback.created_at.isoformat() if feedback else None,
+            "status": "submitted" if feedback else "not_submitted"
+        },
+        "resolution_confirmation": {
+            "response": resolution.response if resolution else None,
+            "confirmed_at": resolution.created_at.isoformat() if resolution else None,
+            "status": resolution.response if resolution else "awaiting"
+        }
+    }
+
+
+# ─── Feature: Email Resolution Confirmation ───────────────────────────────────
+
+@app.get("/api/complaints/email-feedback")
+def handle_email_feedback(
+    token: str,
+    db: Session = Depends(get_db)
+):
+    """Handle SOLVED / NOT SOLVED confirmation from email links.
+    Token is verified cryptographically; no user login required for this action."""
+    payload = verify_email_action_token(token)
+
+    complaint_id = payload["complaint_id"]
+    user_id = payload["user_id"]
+    action = payload["action"]
+
+    complaint = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found.")
+
+    if complaint.user_id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Token does not match complaint owner. Action rejected."
+        )
+
+    existing = db.query(models.ResolutionConfirmation).filter(
+        models.ResolutionConfirmation.complaint_id == complaint_id
+    ).first()
+
+    if existing:
+        existing.response = action
+        existing.created_at = datetime.datetime.now()
+        db.commit()
+        action_label = "✔ SOLVED" if action == "solved" else "✘ NOT SOLVED"
+        return {
+            "message": f"Your resolution confirmation has been updated to: {action_label}",
+            "complaint_id": complaint_id,
+            "response": action
+        }
+
+    new_confirmation = models.ResolutionConfirmation(
+        complaint_id=complaint_id,
+        user_id=user_id,
+        response=action,
+        created_at=datetime.datetime.now()
+    )
+    db.add(new_confirmation)
+    db.commit()
+
+    action_label = "✔ SOLVED" if action == "solved" else "✘ NOT SOLVED"
+    print(f"[Resolution] User {user_id} confirmed complaint #{complaint_id} as: {action}")
+
+    return {
+        "message": f"Thank you! Your confirmation has been recorded: {action_label}. The municipal team has been notified.",
+        "complaint_id": complaint_id,
+        "response": action
+    }
 
 @app.get("/api/analytics")
 def get_analytics(db: Session = Depends(get_db)):
