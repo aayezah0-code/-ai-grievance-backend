@@ -34,6 +34,7 @@ class Complaint(Base):
     call_transcript = Column(Text, nullable=True)         # Full call transcript from Sarvam AI
     call_source = Column(String, nullable=True)           # e.g. 'sarvam_voice', 'web', 'app'
     recording_url = Column(String, nullable=True)         # Audio recording URL from Sarvam
+    interaction_id = Column(String, nullable=True)        # Sarvam Interaction ID for audio/transcripts
     created_at = Column(DateTime, default=datetime.datetime.now)
 
 class User(Base):

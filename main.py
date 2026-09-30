@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Header, Body, Request
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Header, Body, Request, Response
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -309,6 +310,7 @@ class ComplaintResponse(BaseModel):
     call_transcript: Optional[str] = None
     call_source: Optional[str] = None
     recording_url: Optional[str] = None
+    interaction_id: Optional[str] = None
     created_at: datetime.datetime
 
     class Config:
@@ -1726,18 +1728,41 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
 
     caller_phone = find_phone_in_dict(payload)
 
-    # ── Extract transcript (Sarvam sends list of {role,content} dicts) ──
-    raw_transcript = payload.get("transcript") or payload.get("call_transcript") or payload.get("conversation")
+    interaction_id = (
+        payload.get("interaction_id") or
+        payload.get("call_id") or
+        payload.get("id") or
+        (payload.get("data", {}).get("interaction_id") if isinstance(payload.get("data"), dict) else None)
+    )
+
+    # ── Extract transcript (Sarvam sends interaction_transcript as list of turns) ──
+    raw_transcript = (
+        payload.get("interaction_transcript") or
+        payload.get("transcript") or
+        payload.get("call_transcript") or
+        payload.get("conversation") or
+        payload.get("turns") or
+        payload.get("messages") or
+        (payload.get("data", {}).get("interaction_transcript") if isinstance(payload.get("data"), dict) else None) or
+        (payload.get("data", {}).get("transcript") if isinstance(payload.get("data"), dict) else None)
+    )
     if isinstance(raw_transcript, list):
         call_transcript = "\n".join(
-            f"{turn.get('role','?').upper()}: {turn.get('content','')}"
+            f"{turn.get('role', turn.get('speaker', '?')).upper()}: {turn.get('content', turn.get('text', turn.get('message', '')))}"
             for turn in raw_transcript
+            if isinstance(turn, dict)
         )
     else:
         call_transcript = str(raw_transcript or "").strip()
 
-    # ── Extract citizen name (from agent_vars, transcript, or caller phone) ──
-    agent_vars = payload.get("agent_variables") or {}
+    # ── Extract agent_variables (citizen may have spoken name/address) ──
+    agent_vars = (
+        payload.get("final_agent_variables") or
+        payload.get("agent_variables") or
+        payload.get("variables") or
+        (payload.get("data", {}).get("final_agent_variables") if isinstance(payload.get("data"), dict) else {}) or
+        {}
+    )
     citizen_name = (
         agent_vars.get("citizen_name") or
         agent_vars.get("name") or
@@ -1806,8 +1831,13 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
         payload.get("call_recording_url") or
         payload.get("audio_url") or
         payload.get("recording") or
+        payload.get("interaction_recording_url") or
+        (payload.get("data", {}).get("recording_url") if isinstance(payload.get("data"), dict) else None) or
         None
     )
+    # If recording_url not directly given, but interaction_id exists, build proxy route
+    if not recording_url and interaction_id:
+        recording_url = f"/api/complaints/recording/{interaction_id}"
 
     complaint = models.Complaint(
         citizen_name=f"{citizen_name} (📞 Voice Helpline)",
@@ -1827,6 +1857,7 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
         call_transcript=call_transcript,
         call_source=call_source,
         recording_url=recording_url,
+        interaction_id=interaction_id,
         created_at=datetime.datetime.now()
     )
     db.add(complaint)
@@ -1841,6 +1872,40 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
         "department": dept,
         "priority": prio
     }
+
+
+@app.get("/api/complaints/recording/{interaction_id}")
+async def get_sarvam_recording_by_id(interaction_id: str):
+    """
+    Directly streams or redirects to the audio recording from Sarvam Analytics API.
+    """
+    api_key = os.getenv("SARVAM_API_KEY", "sk_samvaad_szxywo4o_kmTSPcDpTqrzUSLMu73Kuz5U").strip()
+    app_id = os.getenv("SARVAM_APP_ID", "grievance-a-26c955ed-938c").strip()
+    org_id = os.getenv("SARVAM_ORG_ID", "default").strip()
+    ws_id = os.getenv("SARVAM_WORKSPACE_ID", "default").strip()
+
+    urls_to_try = [
+        f"https://apps.sarvam.ai/api/analytics/v1/{org_id}/{ws_id}/{app_id}/recordings/{interaction_id}",
+        f"https://api.sarvam.ai/analytics/v1/recordings/{interaction_id}",
+        f"https://indus.sarvam.ai/samvaad/api/recordings/{interaction_id}"
+    ]
+    try:
+        import requests
+        for u in urls_to_try:
+            res = requests.get(u, headers={"X-API-Key": api_key, "Authorization": f"Bearer {api_key}"}, timeout=8)
+            if res.status_code in [200, 201]:
+                data = res.json() if "application/json" in res.headers.get("content-type", "") else {}
+                target = data.get("recording_url") or data.get("audio_url") or data.get("url")
+                if target:
+                    return RedirectResponse(url=target)
+                elif "audio" in res.headers.get("content-type", ""):
+                    return Response(content=res.content, media_type=res.headers.get("content-type"))
+    except Exception as e:
+        print(f"[Recording Proxy] Error: {e}")
+
+    raise HTTPException(status_code=404, detail="Recording audio not found on Sarvam server")
+
+
 
 
 @app.post("/api/request-callback")
