@@ -165,6 +165,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+def root():
+    return {
+        "status": "online",
+        "service": "CitizenConnect Grievance AI Backend",
+        "docs_url": "/docs"
+    }
+
+
 def get_db():
     db = database.SessionLocal()
     try:
