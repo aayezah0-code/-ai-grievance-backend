@@ -15,10 +15,63 @@ import database, models, ai_engine
 
 database.Base.metadata.create_all(bind=database.engine)
 
+def seed_default_accounts():
+    db = database.SessionLocal()
+    try:
+        admins = [
+            ("Aliya Admin", "aliya123@gmail.com", "aliya123", "9999999999"),
+            ("System Admin", "admin@grievance.gov", "Admin@1234", "9876543210"),
+            ("Aliya", "aliya@gmail.com", "123456", "9876543211"),
+            ("Aayezah Ali", "aayezahali@gmail.com", "1234567", "9876543212"),
+        ]
+        for name, email, password, phone in admins:
+            existing = db.query(models.User).filter(models.User.email == email).first()
+            if not existing:
+                u = models.User(
+                    full_name=name,
+                    mobile_no=phone,
+                    email=email,
+                    address="Municipal Administrative HQ",
+                    city="Bhopal",
+                    state="Madhya Pradesh",
+                    pincode="462001",
+                    hashed_password=password,
+                    role="admin",
+                    is_verified=True
+                )
+                db.add(u)
+
+        citizens = [
+            ("Aayezah Ali", "aayezahali111@gmail.com", "12345678", "9123456789"),
+            ("Aayezah", "aayezah0@gmail.com", "12345678", "9123456788")
+        ]
+        for name, email, password, phone in citizens:
+            existing = db.query(models.User).filter(models.User.email == email).first()
+            if not existing:
+                c = models.User(
+                    full_name=name,
+                    mobile_no=phone,
+                    email=email,
+                    address="Citizen Colony",
+                    city="Bhopal",
+                    state="Madhya Pradesh",
+                    pincode="462001",
+                    hashed_password=password,
+                    role="citizen",
+                    is_verified=True
+                )
+                db.add(c)
+        db.commit()
+    except Exception as e:
+        print(f"[Seed] Error seeding users: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+seed_default_accounts()
+
 # --- JWT CONFIGURATION ---
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-if not JWT_SECRET_KEY:
-    raise RuntimeError("JWT_SECRET_KEY environment variable is not set.")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "19bb6444f3aaf9fab6fbc69b3417e7ed12d2929d52276fd9e486b297f4d6c4d7")
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
