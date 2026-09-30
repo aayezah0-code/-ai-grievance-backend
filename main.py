@@ -1782,3 +1782,74 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
         "priority": prio
     }
 
+
+@app.post("/api/request-callback")
+async def request_callback(data: dict = Body(...)):
+    """
+    Triggers an outbound call from the Sarvam AI Voice Agent to the user's phone.
+    Requires SARVAM_ORG_ID, SARVAM_WORKSPACE_ID, SARVAM_APP_ID, SARVAM_API_KEY in .env.
+    """
+    phone = str(data.get("phone_number", "")).strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+
+    # Format to international format (+91...) if user enters 10 digits
+    clean_digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(clean_digits) == 10:
+        formatted_phone = f"+91{clean_digits}"
+    elif phone.startswith("+"):
+        formatted_phone = phone
+    else:
+        formatted_phone = f"+{clean_digits}"
+
+    org_id = os.getenv("SARVAM_ORG_ID", "").strip()
+    workspace_id = os.getenv("SARVAM_WORKSPACE_ID", "").strip()
+    app_id = os.getenv("SARVAM_APP_ID", "").strip()
+    api_key = os.getenv("SARVAM_API_KEY", "").strip()
+
+    if not (org_id and workspace_id and app_id and api_key):
+        return {
+            "success": False,
+            "error": "SARVAM_CONFIG_MISSING",
+            "message": "Sarvam configuration (Org ID, Workspace ID, or App ID) is missing in backend .env."
+        }
+
+    url = f"https://apps.sarvam.ai/api/outbounds/v1/orgs/{org_id}/workspaces/{workspace_id}/outbounds"
+    payload = {
+        "app_config": {"app_id": app_id},
+        "user_config": {"phone_number": formatted_phone},
+        "webhook_config": {
+            "url": "https://ai-grievance-backend-fro0.onrender.com/api/voice-webhook"
+        }
+    }
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+
+    print(f"[Request Callback] Triggering outbound call to {formatted_phone} via Sarvam...")
+    try:
+        import requests
+        resp = requests.post(url, json=payload, headers=headers, timeout=20)
+        print(f"[Request Callback] Sarvam response status={resp.status_code}, body={resp.text}")
+        if resp.status_code in [200, 201]:
+            return {
+                "success": True,
+                "message": f"AI voice agent is calling {formatted_phone}! Please answer to report your grievance.",
+                "sarvam_data": resp.json() if resp.text else {}
+            }
+        else:
+            return {
+                "success": False,
+                "status_code": resp.status_code,
+                "error": resp.text,
+                "message": f"Sarvam API error: {resp.text}"
+            }
+    except Exception as e:
+        print(f"[Request Callback] Connection error: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to connect to Sarvam outbound service."
+        }
+
