@@ -1670,20 +1670,18 @@ def seed_data():
     db.close()
 
 
+_LAST_WEBHOOK_PAYLOAD = {}
+
+@app.get("/api/debug/last-webhook")
+def get_last_webhook():
+    return _LAST_WEBHOOK_PAYLOAD or {"message": "No webhook received yet"}
+
+
 # ─── Sarvam AI Voice Helpline Webhook ───────────────────────────────────
 
 @app.post("/api/voice-webhook")
 async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    Sarvam AI calls this after every inbound call ends.
-    Actual Sarvam webhook payload fields:
-      - interaction_id  : unique call ID
-      - transcript      : full conversation text (list of {role, content} or plain string)
-      - duration        : call duration in seconds
-      - caller_phone / from_number : caller's number
-      - agent_variables : dict of variables collected during call
-      - recording_url   : (if enabled)
-    """
+    global _LAST_WEBHOOK_PAYLOAD
     payload = {}
     try:
         payload = await request.json()
@@ -1692,6 +1690,7 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
     if not payload:
         payload = dict(request.query_params)
 
+    _LAST_WEBHOOK_PAYLOAD = payload
     print(f"[Voice Webhook] Raw payload from Sarvam AI: {payload}")
 
     # ── Deep extraction for caller phone (handles nested Sarvam payloads) ──
