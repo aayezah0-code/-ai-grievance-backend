@@ -1668,6 +1668,59 @@ def seed_data():
 
     db.close()
 
+    # Always ensure full complaints count if fewer than 40
+    db2 = database.SessionLocal()
+    try:
+        if db2.query(models.Complaint).count() < 40:
+            seed_file = os.path.join(os.path.dirname(__file__), "initial_complaints_seed.json")
+            if os.path.exists(seed_file):
+                with open(seed_file, "r", encoding="utf-8") as f:
+                    seed_list = json.load(f)
+                for sc in seed_list:
+                    orig = sc.get("original_text")
+                    exists = db2.query(models.Complaint).filter(models.Complaint.original_text == orig).first() if orig else None
+                    if not exists:
+                        c_dt = datetime.datetime.fromisoformat(sc["created_at"]) if sc.get("created_at") else datetime.datetime.now()
+                        c_obj = models.Complaint(
+                            citizen_name=sc.get("citizen_name"),
+                            title=sc.get("title"),
+                            original_text=sc.get("original_text") or "",
+                            translated_text=sc.get("translated_text"),
+                            department=sc.get("department") or "Other",
+                            priority=sc.get("priority") or "Medium",
+                            sentiment=sc.get("sentiment") or "Neutral",
+                            status=sc.get("status") or "Pending",
+                            estimated_resolution_time=sc.get("estimated_resolution_time"),
+                            image_url=sc.get("image_url"),
+                            latitude=sc.get("latitude"),
+                            longitude=sc.get("longitude"),
+                            address=sc.get("address"),
+                            pincode=sc.get("pincode"),
+                            ai_summary=sc.get("ai_summary"),
+                            detected_issue=sc.get("detected_issue"),
+                            category=sc.get("category"),
+                            visual_risk_level=sc.get("visual_risk_level") or "Medium",
+                            issue_tags=sc.get("issue_tags"),
+                            confidence_score=sc.get("confidence_score") or 95,
+                            image_observation=sc.get("image_observation"),
+                            official_remarks=sc.get("official_remarks"),
+                            state=sc.get("state"),
+                            caller_phone=sc.get("caller_phone"),
+                            call_transcript=sc.get("call_transcript"),
+                            call_source=sc.get("call_source"),
+                            recording_url=sc.get("recording_url"),
+                            interaction_id=sc.get("interaction_id"),
+                            user_id=sc.get("user_id"),
+                            created_at=c_dt
+                        )
+                        db2.add(c_obj)
+                db2.commit()
+    except Exception as e:
+        print(f"[Seed Top-up Error]: {e}")
+        db2.rollback()
+    finally:
+        db2.close()
+
 
 _LAST_WEBHOOK_PAYLOAD = {}
 
