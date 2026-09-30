@@ -693,7 +693,10 @@ def submit_complaint(
     return db_complaint
 
 @app.get("/api/complaints", response_model=List[ComplaintResponse])
-def get_complaints(db: Session = Depends(get_db)):
+def get_complaints(response: Response, db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     print(f"[AI Workflow] Fetching complaint list. REUSING stored AI analysis from database. No Gemini calls triggered.")
     complaints = db.query(models.Complaint).order_by(models.Complaint.id.desc()).all()
     return complaints
