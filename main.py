@@ -1670,6 +1670,16 @@ def seed_data():
 
 @app.post("/api/voice-webhook")
 async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
+    """
+    Sarvam AI calls this after every inbound call ends.
+    Actual Sarvam webhook payload fields:
+      - interaction_id  : unique call ID
+      - transcript      : full conversation text (list of {role, content} or plain string)
+      - duration        : call duration in seconds
+      - caller_phone / from_number : caller's number
+      - agent_variables : dict of variables collected during call
+      - recording_url   : (if enabled)
+    """
     payload = {}
     try:
         payload = await request.json()
@@ -1677,21 +1687,57 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
         pass
     if not payload:
         payload = dict(request.query_params)
-    print(f"[Voice Webhook] Received payload from Sarvam AI: {payload}")
-    citizen_name = payload.get("citizen_name") or "Voice Caller"
-    address = payload.get("address") or "Call Helpline Location"
-    original_text = payload.get("original_text") or payload.get("complaint") or payload.get("description") or "Voice Grievance Reported"
-    caller_phone = payload.get("caller_phone") or payload.get("phone") or payload.get("phone_number") or payload.get("from") or None
-    call_transcript = payload.get("call_transcript") or payload.get("transcript") or payload.get("conversation") or None
+
+    print(f"[Voice Webhook] Raw payload from Sarvam AI: {payload}")
+
+    # ── Extract caller phone ────────────────────────────────────────────
+    caller_phone = (
+        payload.get("caller_phone") or
+        payload.get("from_number") or
+        payload.get("from") or
+        payload.get("phone") or
+        payload.get("phone_number") or
+        None
+    )
+
+    # ── Extract transcript (Sarvam sends list of {role,content} dicts) ──
+    raw_transcript = payload.get("transcript") or payload.get("call_transcript") or payload.get("conversation")
+    if isinstance(raw_transcript, list):
+        # Convert list of {role, content} to readable string
+        call_transcript = "\n".join(
+            f"{turn.get('role','?').upper()}: {turn.get('content','')}"
+            for turn in raw_transcript
+        )
+    else:
+        call_transcript = raw_transcript or ""
+
+    # ── Extract agent_variables (citizen may have spoken name/address) ──
+    agent_vars = payload.get("agent_variables") or {}
+    citizen_name = (
+        agent_vars.get("citizen_name") or
+        agent_vars.get("name") or
+        payload.get("citizen_name") or
+        f"Caller {caller_phone or 'Unknown'}"
+    )
+    address = (
+        agent_vars.get("address") or
+        agent_vars.get("location") or
+        payload.get("address") or
+        "Voice Helpline - Location not provided"
+    )
+
+    # ── Use transcript as the complaint text for AI analysis ─────────────
+    original_text = call_transcript or payload.get("description") or "Voice Grievance Reported via Helpline"
+
     call_source = "sarvam_voice"
-    
     dept = "Public Works Department"
     prio = "High"
     sentiment = "Negative"
-    summary = original_text
+    summary = original_text[:500] if original_text else "Voice complaint"
     detected_issue = "Voice Grievance"
     category = "General Civic Issue"
 
+    # ── Run AI analysis on the transcript ──────────────────────────────
     try:
         analysis = ai_engine.analyze_complaint(original_text)
         if isinstance(analysis, dict):
@@ -1726,12 +1772,12 @@ async def handle_voice_webhook(request: Request, db: Session = Depends(get_db)):
     db.add(complaint)
     db.commit()
     db.refresh(complaint)
-    print(f"[Voice Webhook] Successfully created Complaint ID={complaint.id} for caller {citizen_name}")
+    print(f"[Voice Webhook] ✅ Complaint ID={complaint.id} created | caller={caller_phone} | dept={dept} | prio={prio}")
 
     return {
         "success": True,
         "complaint_id": complaint.id,
-        "message": f"Complaint #{complaint.id} registered successfully for {citizen_name}",
+        "message": f"Complaint #{complaint.id} registered for {citizen_name}",
         "department": dept,
         "priority": prio
     }
