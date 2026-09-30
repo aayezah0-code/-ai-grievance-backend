@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-dotenv
+google-generativeai
+google-genai
+pydantic
+python-multipart
+aiofiles
+pyjwt

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Environment Variables & Secrets
+.env
+.env.local
+
+# Databases & Backups
+*.db
+*.sqlite3
+*.db-journal
+complaints_backup*
+
+# Media Uploads & Temp
+uploads/*
+!uploads/.gitkeep
+temp/
+scratch/
+
+# Testing & Logs
+*.log
+.pytest_cache/
