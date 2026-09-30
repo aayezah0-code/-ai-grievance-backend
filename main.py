@@ -1853,3 +1853,47 @@ async def request_callback(data: dict = Body(...)):
             "message": "Failed to connect to Sarvam outbound service."
         }
 
+
+@app.post("/api/admin/sync-complaints")
+def sync_complaints(complaints: List[dict] = Body(...), db: Session = Depends(get_db)):
+    """Bulk-sync complaints from local database to cloud database."""
+    added = 0
+    for c_data in complaints:
+        orig = c_data.get("original_text")
+        exists = db.query(models.Complaint).filter(models.Complaint.original_text == orig).first() if orig else None
+        if not exists:
+            created_str = c_data.get("created_at")
+            try:
+                created_dt = datetime.datetime.fromisoformat(created_str) if created_str else datetime.datetime.now()
+            except Exception:
+                created_dt = datetime.datetime.now()
+
+            comp = models.Complaint(
+                citizen_name=c_data.get("citizen_name"),
+                title=c_data.get("title"),
+                original_text=c_data.get("original_text") or "",
+                translated_text=c_data.get("translated_text"),
+                department=c_data.get("department") or "Other",
+                priority=c_data.get("priority") or "Medium",
+                sentiment=c_data.get("sentiment") or "Neutral",
+                status=c_data.get("status") or "Pending",
+                latitude=c_data.get("latitude"),
+                longitude=c_data.get("longitude"),
+                address=c_data.get("address"),
+                pincode=c_data.get("pincode"),
+                image_url=c_data.get("image_url"),
+                ai_summary=c_data.get("ai_summary"),
+                detected_issue=c_data.get("detected_issue"),
+                category=c_data.get("category"),
+                visual_risk_level=c_data.get("visual_risk_level") or "Medium",
+                confidence_score=c_data.get("confidence_score") or 95,
+                caller_phone=c_data.get("caller_phone"),
+                call_transcript=c_data.get("call_transcript"),
+                call_source=c_data.get("call_source"),
+                created_at=created_dt
+            )
+            db.add(comp)
+            added += 1
+    db.commit()
+    return {"success": True, "added": added}
+
