@@ -548,7 +548,7 @@ async def upload_profile_image(user_id: int, file: UploadFile = File(...), db: S
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        image_url = f"http://localhost:8000/uploads/{unique_filename}"
+        image_url = f"/uploads/{unique_filename}"
         db_user.profile_image_url = image_url
         db.commit()
         
@@ -603,7 +603,7 @@ def upload_file(file: UploadFile = File(...)):
         file_path = os.path.join("uploads", unique_filename)
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        return {"image_url": f"http://localhost:8000/uploads/{unique_filename}"}
+        return {"image_url": f"/uploads/{unique_filename}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
