@@ -10,3 +10,4 @@ aiofiles
 pyjwt
 requests
 psycopg2-binary
+psycopg[binary]
